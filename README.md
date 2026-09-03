@@ -1,4 +1,4 @@
-# ReflectionHelper
+# PropertyTree
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/laconicman/ReflectionHelper)
 
@@ -16,7 +16,7 @@ Written to inspect decoded API responses in a debug UI. It is deliberately small
 ## Installation
 
 ```swift
-.package(url: "https://github.com/laconicman/ReflectionHelper", from: "1.0.0")
+.package(url: "https://github.com/laconicman/PropertyTree", from: "1.0.0")
 ```
 
 ## Building a tree

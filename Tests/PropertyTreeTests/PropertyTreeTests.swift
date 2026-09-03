@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import ReflectionHelper
+@testable import PropertyTree
 
 /// The tree builder's job is to make a value *readable*, so these pin the three transformations
 /// that do that — unwrapping optionals, indexing arrays, ordering dictionaries — rather than
