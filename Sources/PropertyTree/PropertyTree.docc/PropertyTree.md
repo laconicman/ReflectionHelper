@@ -45,7 +45,8 @@ properties its mirror exposes — the only way to surface a *computed* property,
 
 The **direction docs** — architecture decisions and their rejected alternatives, roadmap, and the
 debt register — live in [`docs/`](https://github.com/laconicman/PropertyTree/tree/main/docs) in the
-repository and are authoritative.
+repository and are authoritative. Arriving from `ReflectionHelper` 1.0.0? Start with
+[Migration](https://github.com/laconicman/PropertyTree/blob/main/docs/Migration.md).
 
 ## Topics
 

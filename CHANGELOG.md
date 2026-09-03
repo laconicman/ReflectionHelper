@@ -76,9 +76,11 @@ The package is renamed from **ReflectionHelper** to **PropertyTree**, and the wa
 +let tree = PropertyNode(reflecting: order, named: "order")
 ```
 
-`selectedKeyPathsToMirror` gained tuple labels, which existing array literals satisfy unchanged.
-Code that read `node.id` as a `UUID`, or called `replacing(children:)` or the memberwise
-initializer, needs revisiting.
+That is the mechanical part. Four changes are **not** compile errors — `init(reflecting:named:)`
+kept its signature and changed meaning, `description` changed format, equality became data-based,
+and depth is now bounded — and `selectedKeyPathsToMirror`'s new tuple labels break a conformance
+that spelled the type explicitly. [**docs/Migration.md**](docs/Migration.md) covers each one with
+the edit that resolves it, and ends in a checklist.
 
 ### Known limitations
 

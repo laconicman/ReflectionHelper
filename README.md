@@ -138,6 +138,30 @@ does. Requires Swift 6.0 or later.
 Coming from `ReflectionHelper` 1.0.0? [**Migration**](docs/Migration.md) covers every break and
 the edit that resolves it — including the four that are *not* compile errors.
 
+## For AI agents
+
+There is no skill to install and no bundled agent file. A discovery skill — the pattern
+[SwiftUIBackports](https://github.com/shaps80/SwiftUIBackports) ships, and a good one — earns its
+place when a package has a large surface an agent must search; this one has two types. And the prose
+an agent needs here is the prose a human needs, so rather than keeping a second copy of it in an
+agent-shaped file, each rule below links to the document that explains it.
+
+[Design](docs/Design.md) is the one to read first: it states every decision *with the alternative it
+rejected*, which is what stops an agent from helpfully undoing a deliberate choice.
+
+| Rule | Where it is explained |
+|---|---|
+| Build a tree with `PropertyNode(reflecting:named:)`. `createPropertyTree` was 1.x and is gone. | [Migration § 1](docs/Migration.md) |
+| `id` is a path `String`. Don't add a `UUID`, and don't put `.id(…)` on the outline row — that is precisely what breaks expansion state. | [Design § Identity](docs/Design.md) |
+| `PropertyNode` is **not** `Sendable`, by decision. Don't reach for `@unchecked` — build the tree on the actor that owns the value. | [Design § `value: Any`](docs/Design.md), [PT-5](docs/Tech-Debt.md) |
+| Use `kind` to tell a dictionary from a struct. Don't infer it from `children`, and don't string-match on `typeName`. | [Design § Dispatch](docs/Design.md) |
+| Don't reintroduce a type→glyph table built from `is` casts over `Any`. It is a Swift casting trap, not a style preference — 9 of 10 arms are unreachable. | [Migration § 5](docs/Migration.md) |
+| `maxDepth` truncation is deliberate. Raise the argument; don't remove the limit — it is the reference-cycle guard. | [Design § A depth limit](docs/Design.md) |
+| Check the `PT-#` register before reporting a limitation as a bug. | [Tech-Debt](docs/Tech-Debt.md) |
+
+Working *on* the package rather than with it: `docs/` is authoritative over code comments wherever
+they disagree, and every discharged entry in the debt register names the test that pins it.
+
 ## Documentation
 
 API reference is hosted on the
