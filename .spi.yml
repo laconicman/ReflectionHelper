@@ -1,0 +1,8 @@
+# Swift Package Index configuration.
+#
+# Only names the documentation target: the package is Foundation-only, so SPI's
+# default macOS build is the right one and needs no `platform:` override.
+version: 1
+builder:
+  configs:
+    - documentation_targets: [PropertyTree]
