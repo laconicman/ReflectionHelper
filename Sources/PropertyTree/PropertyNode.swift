@@ -1,236 +1,151 @@
+//
+//  PropertyNode.swift
+//  PropertyTree
+//
+
 import Foundation
 
-/// Протокол, позволяющий указать, какие из свойств объекта отображать в `Mirror`
-/// Можно подписывать под него конкретные типы или же другие протоколы используя protocol Inheritance.
-public protocol SelectivelyReflectable: CustomReflectable {
-    /// Список свойств объекта, которые должны отображаться в `Mirror`
-    /// Нужен в том числе для отображения вычисляемых свойств, потому что они по умолчанию не отражаются.
-    /// См. также макрос для отображения всех свойств: [KeyPathIterable](https://github.com/Ryu0118/KeyPathIterable)
-    static var selectedKeyPathsToMirror: [(String, PartialKeyPath<Self>)] { get }
-}
-
-public extension SelectivelyReflectable {
-    var customMirror: Mirror {
-        Mirror(self, children: Self.selectedKeyPathsToMirror.map{ Mirror.Child(label: $0, value: self[keyPath: $1]) })
-    }
-}
-
-/// Структура данных об объекте и иерархии его содержимого
+/// One node of a property tree: a reflected value, its rendering, and its children.
+///
+/// Build a tree with ``init(reflecting:named:maxDepth:)`` and drive a SwiftUI
+/// `OutlineGroup` from it:
+///
+/// ```swift
+/// let tree = PropertyNode(reflecting: order, named: "order")
+///
+/// List {
+///     OutlineGroup(tree, children: \.children) { node in
+///         LabeledContent(node.name, value: node.displayValue)
+///     }
+/// }
+/// ```
+///
+/// ### Identity
+///
+/// ``id`` is the node's **path** from the root — `"order.address.city"`,
+/// `"order.tags[0]"` — not a fresh `UUID`. Reflecting the same value twice
+/// therefore produces the same identities, so a rebuilt tree keeps an
+/// `OutlineGroup`'s expansion state instead of collapsing it.
+///
+/// ### Sendability
+///
+/// `PropertyNode` is deliberately **not** `Sendable`: ``value`` is `Any`, so a
+/// node is exactly as safe to share as whatever was reflected into it. Build the
+/// tree on the actor that owns the value.
 public struct PropertyNode: Identifiable {
-    public init(id: UUID = UUID(), name: String, value: Any, children: [PropertyNode]? = nil) {
-        self.id = UUID()
-        self.name = name
-        self.value = value
-        if let children, !children.isEmpty {
-            self.children = children
-        } else {
-            self.children = nil
-        }
+
+    /// The shape the reflected value turned out to have.
+    ///
+    /// This is what distinguishes a dictionary from a struct — both produce a
+    /// node with named children, and without ``kind`` they are indistinguishable.
+    public enum Kind: String, Sendable {
+        /// A leaf. Its ``PropertyNode/displayValue`` is the rendered value.
+        case value
+        /// A struct, class or tuple: children are named after its properties.
+        case structure
+        /// An array, set or other collection: children are indexed `[0]`, `[1]`, …
+        case collection
+        /// A dictionary: children are named after its keys, ordered by key.
+        case dictionary
+        /// An enum case, whose associated values are its children.
+        case enumeration
     }
 
-    public let id: UUID
+    /// The node's path from the root of the tree — stable across rebuilds.
+    public let id: String
+
+    /// The property name, collection index (`[0]`), or dictionary key this node
+    /// was reached by. The root's name is whatever was passed as `named:`.
     public let name: String
+
+    /// The reflected value itself, for a caller that wants to downcast it.
+    ///
+    /// Holding this keeps the reflected object graph alive for as long as the
+    /// tree lives — see ``typeName`` and ``displayValue`` for the rendered form,
+    /// which is all a display needs.
     public let value: Any
+
+    /// The value's dynamic type, as `String(describing: type(of: value))`.
+    ///
+    /// Correct for every value, optionals included (`"Optional<Int>"` for a
+    /// `nil`). A UI that wants type badges should switch on this or on ``kind``.
+    public let typeName: String
+
+    /// The node's rendered value.
+    ///
+    /// - For ``Kind/value``: the value through `CustomStringConvertible`, falling
+    ///   back to `CustomDebugStringConvertible` and then `String(describing:)`.
+    ///   A `nil` optional renders as `"nil"`.
+    /// - For ``Kind/enumeration``: the case name, with any associated values —
+    ///   `"circle(radius: 1.0)"`.
+    /// - For every other kind: the number of children the value has, as a
+    ///   string — including when those children were cut off by `maxDepth`.
+    public let displayValue: String
+
+    /// What shape the value had. See ``Kind``.
+    public let kind: Kind
+
+    /// The node's children, or `nil` for a leaf.
+    ///
+    /// An empty array is never stored; a childless node has `nil` here.
     public let children: [PropertyNode]?
 
+    /// `true` when the value had children that `maxDepth` cut off.
+    ///
+    /// Without this a truncated branch would be indistinguishable from a leaf.
+    /// ``displayValue`` still reports how many children were skipped.
+    public let isTruncated: Bool
+
+    /// `true` when the node has at least one child.
     public var hasChildren: Bool {
         children?.isEmpty == false
     }
-    
-    public func replacing(children: [PropertyNode]?) -> PropertyNode {
-        .init(id: id, name: name, value: value, children: children)
+
+    init(
+        id: String,
+        name: String,
+        value: Any,
+        typeName: String,
+        displayValue: String,
+        kind: Kind,
+        children: [PropertyNode]?,
+        isTruncated: Bool
+    ) {
+        self.id = id
+        self.name = name
+        self.value = value
+        self.typeName = typeName
+        self.displayValue = displayValue
+        self.kind = kind
+        self.children = children?.isEmpty == false ? children : nil
+        self.isTruncated = isTruncated
     }
 }
 
-// В данном случае для conformance `Hashable` и `Equatable` оптимально использовать только `id`.
+// MARK: - PropertyNode + Hashable
+
+/// Equality covers everything except ``PropertyNode/value``, which is `Any` and
+/// so not comparable. Two nodes are equal when their path, name, kind, type,
+/// rendering and children agree — which makes two trees over equal data equal,
+/// and two trees of the same shape over different data unequal.
 extension PropertyNode: Hashable {
     public static func == (lhs: PropertyNode, rhs: PropertyNode) -> Bool {
         lhs.id == rhs.id
+            && lhs.name == rhs.name
+            && lhs.kind == rhs.kind
+            && lhs.typeName == rhs.typeName
+            && lhs.displayValue == rhs.displayValue
+            && lhs.isTruncated == rhs.isTruncated
+            && lhs.children == rhs.children
     }
 
     public func hash(into hasher: inout Hasher) {
         hasher.combine(id)
+        hasher.combine(name)
+        hasher.combine(kind)
+        hasher.combine(typeName)
+        hasher.combine(displayValue)
+        hasher.combine(isTruncated)
+        hasher.combine(children)
     }
 }
-
-// TODO: Добавить инициализатор с лимитом уровней вложенности, с фильтром (см. наработку `createFilteredPropertyTree()`).
-/// Инициализатор для reflection `Mirror`
-public extension PropertyNode {
-    init(reflecting object: Any, named: String) {
-        self = .init(name: named,
-                     value: object,
-                     children: Mirror(reflecting: object).children.map{ .init(reflecting: $0.value, named: $0.label ?? "") })
-    }
-
-    // @Sendable автоматически, потому что pure. К тому же ещё и `static`. См. SE-0418.
-    // TODO: Хорошо бы переделать в инициализатор, но нужно продумать сигнатуру. Можно сократить.
-
-    /// Создаёт очищенный и отфоматированный `PropertyNode` для отображения в иерархическом списке
-    /// - Parameters:
-    ///   - object: объект, для которого будет сформировано дерево
-    ///   - named: Имя переданного `object`
-    /// - Returns: иерархическое дерево объектов для `object`
-    static func createPropertyTree(reflecting object: Any, named: String) -> PropertyNode {
-        let mirror = Mirror(reflecting: object)
-        var childNodes: [PropertyNode] = []
-        switch object {
-        case let array as [Any]:
-            childNodes = array.enumerated().map { index, item in
-                createPropertyTree(reflecting: item, named: "[\(index)]")
-            }
-        case let dictionary as [String: Any]:
-            childNodes = dictionary.sorted(by: { $0.key < $1.key }).map { key, value in
-                createPropertyTree(reflecting: value, named: key)
-            }
-        default:
-            if mirror.children.count == 1, let firstChild = mirror.children.first, firstChild.label == "some" {
-                return createPropertyTree(reflecting: firstChild.value, named: named)
-            }
-            childNodes = mirror.children.map { child in
-                createPropertyTree(reflecting: child.value, named: child.label ?? "")
-            }
-        }
-        return PropertyNode(name: named, value: object, children: childNodes.isEmpty ? nil : childNodes)
-    }
-
-    // Возможно, стоит оформить в функцию, возможно, вынести из модельного слоя, но не факт.
-    var displayValue: String {
-        if hasChildren, let children {
-            "\(children.count)"
-        } else {
-            switch value {
-            case let stringConvertible as CustomStringConvertible:
-                stringConvertible.description
-            case let debugStringConvertible as CustomDebugStringConvertible:
-                debugStringConvertible.debugDescription
-// TODO: доделать, чтоб различать объекты c наборами свойств от dictionaries (`switch (value, hasChildren)`).
-// Сейчас словарь и структрура неразличимы при использовании `createPropertyTree()`.
-//            case let codable as Codable:
-//                // Special handling for Codable types
-//                "Codable: \(String(describing: type(of: codable)))"
-//            case let collection as any Collection:
-//                "Collection (\(collection.count) items)"
-            default:
-                String(describing: value)
-            }
-        }
-    }
-
-}
-
-extension PropertyNode: CustomStringConvertible {
-    public var description: String {
-        "\(name) \(pictogram(for: value))"
-    }
-}
-// MARK: - далее идёт код, подлежаший рефакторингу
-/*
-public extension PropertyNode {
-    // Можно отрефакторить по аналогии с `PropertyNode.init()`
-    static func createFilteredPropertyTree(
-        from object: Any,
-        name: String,
-        excludeTypes: [String] = [] // i.e. = ["Optional"]
-    ) -> PropertyNode {
-        let mirror = Mirror(reflecting: object)
-        let typeName = String(describing: type(of: object))
-
-        if excludeTypes.contains(where: { typeName.contains($0) }) {
-            return PropertyNode(name: name, value: object, children: nil)
-        }
-
-        if mirror.children.isEmpty || isPrimitiveType(object) {
-            return PropertyNode(name: name, value: object, children: nil)
-        } else {
-            let childNodes = mirror.children.compactMap { child -> PropertyNode? in
-                let childName = child.label ?? "unknown"
-                return createFilteredPropertyTree(
-                    from: child.value,
-                    name: childName,
-                    excludeTypes: excludeTypes
-                )
-            }
-            return PropertyNode(name: name, value: object, children: childNodes.isEmpty ? nil : childNodes)
-        }
-    }
-
-}
-
-// @Sendable – автоматически, глобальная. См. SE-0418.
-private func isPrimitiveType(_ value: Any) -> Bool {
-    // Синтаксис наивный
-    value is String || value is Int || value is Double ||
-    value is Float || value is Bool || value is Character
-}
-*/
-
-func pictogram(for value: Any) -> String {
-    // Implementation may seem repetitive but it more efficient than trying to mess with metatypes or `Mirror`.
-    switch value {
-    case is String: "🅂"
-    case is Int: "🄸"
-    case is Date: "🄳🅃"
-    case is Double: "🄳"
-    case is Float: "🄵"
-    case is Bool: "🄱"
-    case is Character: "🄲"
-    case is [Any]: "🅰︎"
-    case is Set<AnyHashable>: "🆂"
-    case is [AnyHashable: Any]: "🅳🅸"
-    case is String?: "🅂?"
-    case is Int?: "🄸?"
-    case is Date?: "🄳🅃?"
-    case is Double?: "🄳?"
-    case is Float?: "🄵?"
-    case is Bool?: "🄱?"
-    case is Character?: "🄲?"
-    case is [Any]?: "🅰︎?"
-    case is Set<AnyHashable>?: "🆂?"
-    case is [AnyHashable: Any]?: "🅳🅸?" 
-    default: "" // or `String(describing: type(of: object))`
-    }
-}
-
-//func pictogram<T>(for value: T) -> String {
-//    let isOptional = T.self is ExpressibleByNilLiteral.Type // is nor reliable
-//    return pictogramForUnderlyingType(of: value) + (isOptional ? "?" : "")
-//}
-//
-//func pictogramForUnderlyingType(of value: Any) -> String {
-//    switch value {
-//    case is String?:             "🅂"
-//    case is Int?:                "🄸"
-//    case is Date?:               "🄳🅃"
-//    case is Double?:             "🄳"
-//    case is Float?:              "🄵"
-//    case is Bool?:               "🄱"
-//    case is Character?:          "🄲"
-//    case is [Any]?:              "🅰︎"
-//    case is Set<AnyHashable>?:   "🆂"
-//    case is [AnyHashable: Any]?: "🅳🅸"
-//    default:                     ""
-//    }
-//}
-
-//func pictogram<T>(for value: T) -> String {
-//    return pictogramForType(T.self, isOptional: T.self is ExpressibleByNilLiteral.Type)
-//}
-//
-//private func pictogramForType(_ type: Any.Type, isOptional: Bool) -> String {
-//    let suffix = isOptional ? "?" : ""
-//    
-//    // Use a more systematic approach with metatype checking
-//    return switch type {
-//    case is String.Type, is String?.Type: "🅂" + suffix
-//    case is Int.Type, is Int?.Type: "🄸" + suffix
-//    case is Date.Type, is Date?.Type: "🄳🅃" + suffix
-//    case is Double.Type, is Double?.Type: "🄳" + suffix
-//    case is Float.Type, is Float?.Type: "🄵" + suffix
-//    case is Bool.Type, is Bool?.Type: "🄱" + suffix
-//    case is Character.Type, is Character?.Type: "🄲" + suffix
-//    case is Array<Any>.Type, is Array<Any>?.Type: "🅰︎" + suffix
-//    case is Set<AnyHashable>.Type, is Set<AnyHashable>?.Type: "🆂" + suffix
-//    case is Dictionary<AnyHashable, Any>.Type, is Dictionary<AnyHashable, Any>?.Type: "🅳🅸" + suffix
-//    default: ""
-//    }
-//}
