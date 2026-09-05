@@ -1,5 +1,7 @@
 # ReflectionHelper
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/laconicman/ReflectionHelper)
+
 Turns any Swift value into a browsable tree, and lets a type decide what `Mirror` shows of it.
 
 Two small pieces, both built on `Mirror`:
