@@ -117,17 +117,19 @@ named test.
 produced one `id` for two nodes. Review found the second of those, which is the common case — the
 register had recorded only the first.
 
-Discharged in two passes, the first of which was incomplete. Sibling components are made unique
+Discharged over three passes, the first two of which were incomplete. Sibling components are made unique
 before the walker recurses, suffixing repeats `#2`, `#3`, …; and names are escaped over the
-grammar's reserved characters (`.` `[` `]` `#` `\`). The second review round showed why escaping
-is needed and not merely tidy: without it, siblings `a`, `a`, `a#2` became `a`, `a#2`, `a#2` — the
-disambiguator colliding with a literal sibling — and a child named `a.b` still encoded exactly
-like a child `a` holding a child `b`. Ordinary names contain no reserved character, so ordinary
-paths are unchanged.
+grammar's reserved characters (`.` `[` `]` `#` `\`). Review showed twice why escaping is needed and
+not merely tidy: without it, siblings `a`, `a`, `a#2` became `a`, `a#2`, `a#2` — the disambiguator
+colliding with a literal sibling — and a child named `a.b` still encoded exactly like a child `a`
+holding a child `b`. Escaping then had to move from `Character` to Unicode scalar, since a `.`
+carrying a combining mark is one `Character` that is not equal to `"."` yet still contributes a
+separator scalar. Ordinary names contain no reserved character, so ordinary paths are unchanged.
 
 Pinned by `disambiguatesCollidingDictionaryKeys`, `disambiguatesTiedSetElements`,
 `idsAreUniqueThroughout`, `doesNotCollideWithALiteralSuffix`,
-`doesNotConfuseSeparatorsWithStructure` and `keepsOrdinaryPathsClean`. Ordering stability for tied
+`doesNotConfuseSeparatorsWithStructure`, `escapesSeparatorsAtScalarLevel` and
+`keepsOrdinaryPathsClean`. Ordering stability for tied
 siblings remains open as PT-2.
 
 ### PT-8 — `init(id:…)` dropped its `id` argument · **discharged**

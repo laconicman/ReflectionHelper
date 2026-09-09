@@ -476,6 +476,30 @@ struct IdentityUniquenessTests {
         #expect(Set(all.map(\.id)).count == all.count)
     }
 
+    @Test("A separator carrying a combining mark cannot impersonate nesting")
+    func escapesSeparatorsAtScalarLevel() {
+        // Regression: escaping walked `Character`s, but a `.` followed by a
+        // combining mark is one grapheme cluster that is not equal to ".", so it
+        // escaped nothing while still contributing a separator scalar. The label
+        // below then collided with the nested path beside it.
+        struct Inner: CustomReflectable {
+            var customMirror: Mirror { Mirror(self, children: [Mirror.Child(label: "\u{0301}b", value: 2)]) }
+        }
+        struct Outer: CustomReflectable {
+            var customMirror: Mirror {
+                Mirror(self, children: [
+                    Mirror.Child(label: "a.\u{0301}b", value: 1),
+                    Mirror.Child(label: "a", value: Inner())
+                ])
+            }
+        }
+
+        let all = flattened(PropertyNode(reflecting: Outer(), named: "root"))
+
+        #expect(all.count == 4)
+        #expect(Set(all.map(\.id)).count == all.count)
+    }
+
     @Test("Ordinary names produce unescaped, readable paths")
     func keepsOrdinaryPathsClean() {
         // Escaping must not tax the common case: nothing here contains a

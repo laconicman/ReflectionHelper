@@ -64,8 +64,15 @@ generated suffix can never collide with a real sibling called `a#2`. The visible
 alone, so only the path disambiguates, and ordinary names contain none of the reserved characters
 — `order.address.city` and `order.tags[0]` are unchanged.
 
-Both holes came from the second review round: the first attempt escaped nothing and suffixed
-blindly, which turned siblings `a`, `a`, `a#2` into `a`, `a#2`, `a#2`. What cannot be enforced is *stability* for siblings that
+Escaping walks **Unicode scalars, not `Character`s**, because that is the level the separators live
+at: a `.` followed by a combining mark is a single `Character` that does not compare equal to
+`"."`, so a grapheme-level pass leaves it unescaped while it still contributes a separator scalar.
+
+All three holes came from review, over two rounds, each after the previous fix was called done: the
+first attempt escaped nothing and suffixed blindly, turning siblings `a`, `a`, `a#2` into `a`,
+`a#2`, `a#2`; the second escaped by `Character` and so missed the combining-mark case. The lesson
+recorded here is that a lossy encoding does not become injective by patching the cases you happen
+to think of — the guarantee has to come from the grammar. What cannot be enforced is *stability* for siblings that
 render alike: their order is arbitrary, so which of them holds which index can change between runs
 ([PT-2](./Tech-Debt.md)). Every ordinary value renders distinctly and is unaffected.
 

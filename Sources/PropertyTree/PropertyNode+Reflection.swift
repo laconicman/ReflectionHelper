@@ -357,23 +357,30 @@ private extension PropertyNode {
         return "." + escaped(bare)
     }
 
-    /// Escapes the four characters the path grammar reserves, so that a name can
-    /// never be mistaken for structure.
+    /// Escapes the characters the path grammar reserves, so that a name can never
+    /// be mistaken for structure.
     ///
-    /// Without this the grammar is ambiguous in two ways, both found in review.
+    /// Without this the grammar is ambiguous in three ways, each found in review.
     /// A child named `a.b` encodes exactly like a child `a` holding a child `b`.
-    /// And `#`, which marks a disambiguated repeat, could already appear in a
-    /// name: siblings `a`, `a`, `a#2` would have produced `a#2` twice — the
-    /// disambiguator colliding with a literal sibling.
+    /// `#`, which marks a disambiguated repeat, can already appear in a name, so
+    /// siblings `a`, `a`, `a#2` produced `a#2` twice — the disambiguator
+    /// colliding with a literal sibling.
+    ///
+    /// And this walks **Unicode scalars, not `Character`s**, because that is the
+    /// level the separators live at. A `.` followed by a combining mark is a
+    /// single `Character` which does not compare equal to `"."`, so a
+    /// grapheme-level pass left it unescaped while it still contributed a
+    /// separator scalar to the path: a label `a.<U+0301>b` then collided with a
+    /// child `a` holding a child `<U+0301>b`.
     ///
     /// Ordinary names contain none of these, so ordinary paths are unchanged.
     static func escaped(_ name: String) -> String {
-        var escaped = ""
-        for character in name {
-            if character == "\\" || character == "." || character == "[" || character == "]" || character == "#" {
-                escaped.append("\\")
+        var escaped = String()
+        for scalar in name.unicodeScalars {
+            if scalar == "\\" || scalar == "." || scalar == "[" || scalar == "]" || scalar == "#" {
+                escaped.unicodeScalars.append("\\")
             }
-            escaped.append(character)
+            escaped.unicodeScalars.append(scalar)
         }
         return escaped
     }
