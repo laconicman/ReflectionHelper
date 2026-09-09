@@ -30,11 +30,14 @@ process launches, a three-element set of tied values came out `[1,2,3]`, `[1,3,2
 `[2,3,1]`. Their ids stay unique (see PT-3, discharged) but which element holds which index moves,
 so a SwiftUI outline can carry expansion state to the wrong row. Ordinary values render distinctly
 and are unaffected.
-**Discharge.** Compare numerically when every rendered key parses as a number. For ties there is no
-second key to compare on for an arbitrary `Any`, so the honest fix is either to require a
-`Comparable`/`Hashable` witness where one exists, or to state ties as unordered and stop implying
-stability. Pinned today by `handlesNonStringKeys`, which asserts the current order deliberately, so
-that test changes with the fix.
+**Discharge.** Compare numerically when every rendered key parses as a number. For ties there *is* a
+usable second key, and an earlier version of this entry was wrong to say otherwise: the element's
+**rendered subtree**. It is total enough for the purpose — two siblings whose subtrees render
+identically are indistinguishable everywhere else in this library, so any order between them is
+unobservable, and two that differ get a deterministic order. It is not in 2.0.0 because of cost: it
+would be computed only when a top-level tie is detected, but a tied set nested inside a tied set
+compounds the extra walk. Measure before adopting. Pinned today by `handlesNonStringKeys`, which
+asserts the current order deliberately, so that test changes with the fix.
 
 ### PT-4 — The leaf policy is a closed list · **open**
 
