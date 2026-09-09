@@ -434,6 +434,61 @@ struct IdentityUniquenessTests {
         #expect(Set(children.map(\.id)).count == 3)
     }
 
+    @Test("A generated suffix cannot collide with a literal sibling")
+    func doesNotCollideWithALiteralSuffix() {
+        // Regression: naively suffixing repeats turns ["a", "a", "a#2"] into
+        // ["a", "a#2", "a#2"] — the disambiguator colliding with a real sibling.
+        // Escaping `#` in a name is what keeps the two apart.
+        struct RenderedKey: Hashable, CustomStringConvertible {
+            let id: Int
+            let rendered: String
+            var description: String { rendered }
+        }
+
+        let subject = [
+            RenderedKey(id: 1, rendered: "a"): 1,
+            RenderedKey(id: 2, rendered: "a"): 2,
+            RenderedKey(id: 3, rendered: "a#2"): 3
+        ]
+        let children = PropertyNode(reflecting: subject, named: "d").children ?? []
+
+        #expect(children.count == 3)
+        #expect(Set(children.map(\.id)).count == 3)
+    }
+
+    @Test("A name containing a separator cannot impersonate nesting")
+    func doesNotConfuseSeparatorsWithStructure() {
+        // Regression: a child named "a.b" encoded exactly like a child "a"
+        // holding a child "b", so the two shared an id.
+        struct Inner { let b = 2 }
+        struct Ambiguous: CustomReflectable {
+            var customMirror: Mirror {
+                Mirror(self, children: [
+                    Mirror.Child(label: "a.b", value: 1),
+                    Mirror.Child(label: "a", value: Inner())
+                ])
+            }
+        }
+
+        let all = flattened(PropertyNode(reflecting: Ambiguous(), named: "root"))
+
+        #expect(all.count == 4)                             // root, a.b, a, a.b's namesake under a
+        #expect(Set(all.map(\.id)).count == all.count)
+    }
+
+    @Test("Ordinary names produce unescaped, readable paths")
+    func keepsOrdinaryPathsClean() {
+        // Escaping must not tax the common case: nothing here contains a
+        // reserved character, so nothing is escaped.
+        struct Address { let city = "Moscow" }
+        struct Order { let id = 7, address = Address(), tags = ["a"] }
+
+        let tree = PropertyNode(reflecting: Order(), named: "order")
+        let ids = flattened(tree).map(\.id)
+
+        #expect(ids == ["order", "order.id", "order.address", "order.address.city", "order.tags", "order.tags[0]"])
+    }
+
     @Test("Every id in a tree is unique")
     func idsAreUniqueThroughout() {
         struct Nested { let a = [1, 2], b = ["x": 1, "y": 2], c = Tied(id: 1) }

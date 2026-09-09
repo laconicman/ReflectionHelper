@@ -61,7 +61,10 @@ deferred to a 3.0.0 — see [Design](./Design.md) § `value: Any` is kept.
 `displayValue` and `typeName` are computed for the whole tree at build time.
 
 **Cost.** Building a tree over a large payload renders every node even though a list shows twenty
-rows. Invisible at the sizes this package targets; the wrong shape for a big one.
+rows. Invisible at the sizes this package targets; the wrong shape for a big one. Related, and
+noted in review: a node *at* the depth limit still builds its mirror and collects its members, in
+order to report a child count and `isTruncated`, so an expensive custom mirror runs at every
+truncated boundary.
 **Discharge.** Render on demand behind a stored cache, or build children lazily so an unexpanded
 branch is never walked.
 
@@ -111,11 +114,21 @@ named test.
 
 `id` is built by joining names, and names are not injective: a dictionary key containing `.` or
 `[`, two keys rendering the same string, or a subclass property shadowing an inherited one all
-produced one `id` for two nodes. Review found the second of those, which is the common case —
-the register had recorded only the first. Discharged by making sibling path components unique
-before the walker recurses, suffixing repeats `#2`, `#3`, … while leaving the visible `name`
-alone. Pinned by `disambiguatesCollidingDictionaryKeys`, `disambiguatesTiedSetElements` and
-`idsAreUniqueThroughout`. Ordering stability for tied siblings remains open as PT-2.
+produced one `id` for two nodes. Review found the second of those, which is the common case — the
+register had recorded only the first.
+
+Discharged in two passes, the first of which was incomplete. Sibling components are made unique
+before the walker recurses, suffixing repeats `#2`, `#3`, …; and names are escaped over the
+grammar's reserved characters (`.` `[` `]` `#` `\`). The second review round showed why escaping
+is needed and not merely tidy: without it, siblings `a`, `a`, `a#2` became `a`, `a#2`, `a#2` — the
+disambiguator colliding with a literal sibling — and a child named `a.b` still encoded exactly
+like a child `a` holding a child `b`. Ordinary names contain no reserved character, so ordinary
+paths are unchanged.
+
+Pinned by `disambiguatesCollidingDictionaryKeys`, `disambiguatesTiedSetElements`,
+`idsAreUniqueThroughout`, `doesNotCollideWithALiteralSuffix`,
+`doesNotConfuseSeparatorsWithStructure` and `keepsOrdinaryPathsClean`. Ordering stability for tied
+siblings remains open as PT-2.
 
 ### PT-8 — `init(id:…)` dropped its `id` argument · **discharged**
 

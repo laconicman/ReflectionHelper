@@ -162,18 +162,21 @@ private extension PropertyNode {
         // Components are made unique *before* any recursion, so no two nodes in
         // a tree can share an `id`. Two dictionary keys that render alike, or a
         // subclass property shadowing an inherited one, would otherwise collide
-        // and make a SwiftUI outline conflate their rows.
+        // and make a SwiftUI outline conflate their rows. Each component already
+        // carries its own separator, so appending is all that is left to do.
         return zip(entries, disambiguated(entries.map(\.component))).map { entry, component in
             node(
                 reflecting: entry.value,
                 name: entry.name,
-                path: childPath(path, component: component),
+                path: path + component,
                 depth: depth + 1,
                 maxDepth: maxDepth
             )
         }
     }
 
+    /// `name` is what a reader sees; `component` is what the path is built from,
+    /// escaped and carrying its own leading separator.
     typealias ChildEntry = (name: String, component: String, value: Any)
 
     static func childEntries(members: [Mirror.Child], mirror: Mirror, kind: Kind) -> [ChildEntry] {
@@ -192,7 +195,7 @@ private extension PropertyNode {
             }
             return elements.enumerated().map { index, element in
                 (name: "[\(index)]", component: "[\(index)]", value: element)
-            }
+            }   // an index is digits, so it needs no escaping
 
         case .dictionary:
             // Each child of a dictionary's mirror is a `(key:value:)` tuple, so
@@ -206,7 +209,7 @@ private extension PropertyNode {
                     return (String(describing: key), value)
                 }
                 .sorted { $0.key < $1.key }
-                .map { (name: $0.key, component: "[\($0.key)]", value: $0.value) }
+                .map { (name: $0.key, component: "[\(escaped($0.key))]", value: $0.value) }
 
         case .enumeration:
             // A case with associated values reflects as one child: its label is
@@ -218,16 +221,16 @@ private extension PropertyNode {
             if payloadMirror.displayStyle == .tuple {
                 return payloadMirror.children.enumerated().map { index, associated in
                     let name = associated.label ?? "[\(index)]"
-                    return (name: name, component: name, value: associated.value)
+                    return (name: name, component: pathComponent(for: name), value: associated.value)
                 }
             }
             let name = payload.label ?? "value"
-            return [(name: name, component: name, value: payload.value)]
+            return [(name: name, component: pathComponent(for: name), value: payload.value)]
 
         case .structure:
             return members.enumerated().map { index, property in
                 let name = property.label ?? "[\(index)]"
-                return (name: name, component: name, value: property.value)
+                return (name: name, component: pathComponent(for: name), value: property.value)
             }
         }
     }
@@ -343,11 +346,35 @@ private extension PropertyNode {
         return "\(data.count) bytes: \(preview)\(ellipsis)"
     }
 
-    /// Joins a path component onto a parent path, without doubling the separator
-    /// for components that carry their own (`[0]`, `.1`).
-    static func childPath(_ parent: String, component: String) -> String {
-        component.hasPrefix("[") || component.hasPrefix(".")
-            ? parent + component
-            : parent + "." + component
+    /// The path component for a named child — a property, an enum's associated
+    /// value, a tuple element — separator included.
+    ///
+    /// `Mirror` spells an unlabelled tuple element `.0`, and that leading dot is
+    /// the separator rather than part of the name, so it is dropped before
+    /// escaping; otherwise `root.0` would come out `root.\.0`.
+    static func pathComponent(for name: String) -> String {
+        let bare = name.hasPrefix(".") ? String(name.dropFirst()) : name
+        return "." + escaped(bare)
+    }
+
+    /// Escapes the four characters the path grammar reserves, so that a name can
+    /// never be mistaken for structure.
+    ///
+    /// Without this the grammar is ambiguous in two ways, both found in review.
+    /// A child named `a.b` encodes exactly like a child `a` holding a child `b`.
+    /// And `#`, which marks a disambiguated repeat, could already appear in a
+    /// name: siblings `a`, `a`, `a#2` would have produced `a#2` twice — the
+    /// disambiguator colliding with a literal sibling.
+    ///
+    /// Ordinary names contain none of these, so ordinary paths are unchanged.
+    static func escaped(_ name: String) -> String {
+        var escaped = ""
+        for character in name {
+            if character == "\\" || character == "." || character == "[" || character == "]" || character == "#" {
+                escaped.append("\\")
+            }
+            escaped.append(character)
+        }
+        return escaped
     }
 }

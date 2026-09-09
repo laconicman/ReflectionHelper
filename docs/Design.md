@@ -54,9 +54,18 @@ and not reliably `Hashable`.
 **Uniqueness is enforced, stability is conditional.** Paths are derived from names, and names are
 not injective: two dictionary keys rendering the same string, a key containing a `.` or `[`, or a
 subclass property shadowing an inherited one would all produce one `id` for two nodes — the very
-SwiftUI collision the path was introduced to prevent. Sibling path components are therefore made
-unique before the walker recurses, by suffixing repeats `#2`, `#3`, …; the visible `name` is left
-alone, so only the path disambiguates. What cannot be enforced is *stability* for siblings that
+SwiftUI collision the path was introduced to prevent.
+
+Two mechanisms make the encoding injective. Names are **escaped** — `.`, `[`, `]`, `#` and `\` are
+the grammar's reserved characters — so a child named `a.b` can no longer encode identically to a
+child `a` holding a child `b`. Then sibling components are made **unique before the walker
+recurses**, suffixing repeats `#2`, `#3`, …; because a literal `#` in a name is escaped, a
+generated suffix can never collide with a real sibling called `a#2`. The visible `name` is left
+alone, so only the path disambiguates, and ordinary names contain none of the reserved characters
+— `order.address.city` and `order.tags[0]` are unchanged.
+
+Both holes came from the second review round: the first attempt escaped nothing and suffixed
+blindly, which turned siblings `a`, `a`, `a#2` into `a`, `a#2`, `a#2`. What cannot be enforced is *stability* for siblings that
 render alike: their order is arbitrary, so which of them holds which index can change between runs
 ([PT-2](./Tech-Debt.md)). Every ordinary value renders distinctly and is unaffected.
 
