@@ -210,6 +210,12 @@ distinct key in a `Set` or `Dictionary`.
 because `Any` is not comparable. So two trees over equal data are now equal, and two trees of the
 same *shape* over different data are not.
 
+The guarantee is about the **rendering**, not the value — a node holds `Any`, so equality has
+nothing else to compare. Two values that render identically therefore compare equal however they
+differ underneath. `Data` is the case where that used to bite, since its own description is a byte
+count alone; it now renders a hex preview, leaving only blobs that agree in both length and first
+16 bytes.
+
 Code that relied on the old semantics changes behaviour without changing shape:
 
 - `Set<PropertyNode>` **now deduplicates** structurally identical nodes. If you used a set as an
@@ -262,7 +268,10 @@ still expands to its properties.
   recognised `[Any]` and `[String: Any]` and nothing else.
 - **`Date`, `URL`, `Data` and `Decimal` are leaves** instead of branches over
   `timeIntervalSinceReferenceDate`, `_url`, a byte buffer and `_mantissa`.
-- **Stable identity**, so an `OutlineGroup` keeps its expanded rows across a rebuild.
+- **Stable identity**, so an `OutlineGroup` keeps its expanded rows across a rebuild — and unique
+  identity, since siblings whose names collide are suffixed `#2`, `#3`, ….
+- **Inherited properties.** 1.0.0 walked `Mirror.children` only, so reflecting a subclass silently
+  dropped everything declared by its superclasses.
 - **No crash on a reference cycle.**
 - **`displayValue` and `typeName` are stored**, computed once while the tree is built rather than on
   every SwiftUI body evaluation of every visible row.

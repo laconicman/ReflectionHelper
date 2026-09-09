@@ -27,6 +27,12 @@ import Foundation
 /// therefore produces the same identities, so a rebuilt tree keeps an
 /// `OutlineGroup`'s expansion state instead of collapsing it.
 ///
+/// Paths are **unique within a tree**: siblings whose names would collide get a
+/// `#2`, `#3`, … suffix. They are **stable across rebuilds** whenever each set
+/// of siblings renders distinctly, which is every ordinary value; two dictionary
+/// keys or set elements that render identically are ordered arbitrarily, so
+/// which of them holds which index can change between runs.
+///
 /// ### Sendability
 ///
 /// `PropertyNode` is deliberately **not** `Sendable`: ``value`` is `Any`, so a
@@ -51,7 +57,8 @@ public struct PropertyNode: Identifiable {
         case enumeration
     }
 
-    /// The node's path from the root of the tree — stable across rebuilds.
+    /// The node's path from the root of the tree — unique within the tree, and
+    /// stable across rebuilds. See the Identity section above.
     public let id: String
 
     /// The property name, collection index (`[0]`), or dictionary key this node
@@ -124,10 +131,18 @@ public struct PropertyNode: Identifiable {
 
 // MARK: - PropertyNode + Hashable
 
-/// Equality covers everything except ``PropertyNode/value``, which is `Any` and
-/// so not comparable. Two nodes are equal when their path, name, kind, type,
-/// rendering and children agree — which makes two trees over equal data equal,
-/// and two trees of the same shape over different data unequal.
+/// Equality compares a node's *description* of a value rather than the value
+/// itself: ``PropertyNode/value`` is `Any`, so there is nothing to compare it
+/// against. Two nodes are equal when their path, name, kind, type name,
+/// rendering, truncation and children agree.
+///
+/// In practice that makes two trees over equal data equal, and two trees of the
+/// same shape over different data unequal — but the guarantee is about the
+/// *rendering*, so two values that render identically compare equal however they
+/// differ underneath. `Data` was the shipped example of that: its own
+/// description is a byte count alone, so any two blobs of one size collapsed. It
+/// now renders a hex preview, leaving only blobs that agree in both length and
+/// first 16 bytes.
 extension PropertyNode: Hashable {
     public static func == (lhs: PropertyNode, rhs: PropertyNode) -> Bool {
         lhs.id == rhs.id

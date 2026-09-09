@@ -31,6 +31,11 @@ The package is renamed from **ReflectionHelper** to **PropertyTree**, and the wa
   leaf. `displayValue` still reports how many children were cut.
 - **`treeDescription`** — the subtree as indented text, for a console or a test.
 - **Set, enum and tuple support**, and dictionaries with keys of any type.
+- **Inherited properties.** A class's members are collected across its `superclassMirror` chain, so
+  reflecting a subclass no longer drops what its superclasses hold. A `SelectivelyReflectable` type
+  keeps the selection it declared.
+- **`Data` renders its bytes** — `3 bytes: 01 02 03`, truncated after 16 — since its own
+  description is a byte count that describes no payload.
 - **`Date`, `URL`, `Data` and `Decimal` are leaves** rather than branches over their internals.
 - **CI** on macOS and on a Linux container, the latter being what tests the Foundation-only claim.
 - **Direction docs** in [`docs/`](docs/) — design decisions with their rejected alternatives, a
@@ -63,6 +68,18 @@ The package is renamed from **ReflectionHelper** to **PropertyTree**, and the wa
   carries no display style, which the first draft of the new classifier read as "leaf".
 - **The README described `init(reflecting:named:)` as shallow.** It recursed.
 
+Found while reviewing this branch:
+
+- **Inherited stored properties vanished.** `Mirror.children` stops at the type itself, so
+  reflecting a subclass showed only its own properties — and a subclass declaring none was
+  classified a leaf, hiding everything it inherited.
+- **Distinct `Data` payloads compared equal.** Two blobs of one size rendered `3 bytes` alike, so
+  they compared equal and collapsed in a `Set`.
+- **Two nodes could share an `id`.** Any siblings whose names render alike — two dictionary keys,
+  a shadowed inherited property — collided, which is the SwiftUI conflation path identity exists to
+  prevent. Sibling path components are now made unique before recursing, suffixed `#2`, `#3`, ….
+- **A negative `maxDepth` had no defined meaning.** It is clamped to zero.
+
 ### Migration from 1.0.0
 
 ```diff
@@ -84,13 +101,17 @@ the edit that resolves it, and ends in a checklist.
 
 ### Known limitations
 
-- **Ordering is lexicographic on the rendered key**, so a `[Int: T]` reads 1, 10, 2 (PT-2).
+- **Ordering is lexicographic on the rendered key**, so a `[Int: T]` reads 1, 10, 2; and siblings
+  that render *identically* tie, so which of them holds which index can change between runs (PT-2).
 - **Cycles are survived, not detected** — a cyclic graph renders as a repeating chain to the depth
   limit rather than naming the cycle (PT-1).
+- **Equality compares the rendering, not the value** — a node holds `Any`, so two values that
+  render identically compare equal however they differ (PT-14).
 - **A tree retains the reflected object graph**, and `PropertyNode` is therefore not `Sendable`
   (PT-5).
 - **The leaf list is closed** — a consumer's own opaque type still spills its internals (PT-4).
-- **Path ids can collide** on a dictionary key containing `.` or `[` (PT-3).
+- **`typeName` does not identify optionality consistently** — `Optional<Int>` for a `nil`, `Int`
+  for a present value (PT-15).
 - **No release has been used against a real decoded payload yet** (PT-7).
 
 Full register: [docs/Tech-Debt.md](docs/Tech-Debt.md).

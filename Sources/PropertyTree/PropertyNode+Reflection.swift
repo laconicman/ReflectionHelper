@@ -30,12 +30,18 @@ public extension PropertyNode {
     ///
     /// - **Optionals collapse.** `Mirror` reflects `.some(x)` as a child labelled
     ///   `"some"`; that level is removed, so a `String?` looks like a `String`.
-    ///   A `nil` becomes a leaf rendering `"nil"`.
+    ///   A `nil` becomes a leaf rendering `"nil"`. One consequence worth knowing:
+    ///   ``PropertyNode/typeName`` reports `Optional<Int>` for a `nil` and `Int`
+    ///   for a present value, so it does not identify optionality consistently.
+    /// - **Inherited properties appear.** `Mirror.children` stops at the type
+    ///   itself, so a class's inherited stored properties are collected from its
+    ///   ancestors too — without this a subclass declaring no stored properties
+    ///   of its own would look like a leaf.
     /// - **Collections are indexed** `[0]`, `[1]`, … rather than reflected as
     ///   `Array`'s internals. Sets are ordered by their rendered elements, since
     ///   set order is otherwise not defined between runs.
-    /// - **Dictionaries are keyed and sorted by key**, for any key type — not
-    ///   just `String` — so two runs over the same data agree.
+    /// - **Dictionaries are keyed and ordered by key**, for any key type — not
+    ///   just `String`.
     /// - **Enum cases** render as their case name and expand to their associated
     ///   values.
     /// - **`Date`, `URL`, `Data` and `Decimal` are leaves.** Reflected, they
@@ -46,11 +52,13 @@ public extension PropertyNode {
     ///   - object: The value to reflect.
     ///   - named: The root node's ``PropertyNode/name``, which also roots every
     ///     descendant's ``PropertyNode/id`` path.
-    ///   - maxDepth: How many levels below the root to expand. A node at the
-    ///     limit keeps its ``PropertyNode/kind`` and child count but reports
+    ///   - maxDepth: How many levels below the root to expand; values below zero
+    ///     are treated as zero. A node at the limit keeps its
+    ///     ``PropertyNode/kind`` and child count but reports
     ///     ``PropertyNode/isTruncated``. The limit is what stops a reference
     ///     cycle — two objects pointing at each other — from recursing until the
     ///     stack is exhausted.
+    ///
     /// - Note: Generic rather than taking `Any`, so that reflecting an optional
     ///   is warning-free at the call site and keeps its static type — the same
     ///   reason `String(describing:)` is generic.
@@ -60,7 +68,7 @@ public extension PropertyNode {
             name: named,
             path: named,
             depth: 0,
-            maxDepth: maxDepth
+            maxDepth: max(0, maxDepth)
         )
     }
 }
@@ -96,61 +104,100 @@ private extension PropertyNode {
             )
         }
 
-        let kind = kind(of: object, mirror: mirror)
-        let childCount = mirror.children.count
-        let isTruncated = kind != .value && childCount > 0 && depth >= maxDepth
+        let members = members(of: mirror, subject: object)
+        let kind = kind(of: object, mirror: mirror, memberCount: members.count)
+        let isTruncated = kind != .value && !members.isEmpty && depth >= maxDepth
         let children: [PropertyNode]? = (kind == .value || depth >= maxDepth)
             ? nil
-            : childNodes(of: mirror, kind: kind, path: path, depth: depth, maxDepth: maxDepth)
+            : childNodes(members: members, mirror: mirror, kind: kind, path: path, depth: depth, maxDepth: maxDepth)
 
         return PropertyNode(
             id: path,
             name: name,
             value: object,
             typeName: typeName(of: object),
-            displayValue: displayValue(of: object, kind: kind, childCount: childCount),
+            displayValue: displayValue(of: object, kind: kind, memberCount: members.count),
             kind: kind,
             children: children,
             isTruncated: isTruncated
         )
     }
 
+    /// The value's reflected members, including those it inherited.
+    ///
+    /// `Mirror.children` stops at the type itself, so a class's **inherited**
+    /// stored properties hang off its `superclassMirror` and would otherwise
+    /// vanish from the tree — and a subclass declaring no stored properties of
+    /// its own would be classified as a leaf, hiding everything it holds. The
+    /// ancestor chain is walked root-most first, so a subclass's own properties
+    /// read last. For anything that is not a class this is exactly
+    /// `mirror.children`, since `superclassMirror` is then `nil`.
+    ///
+    /// Ancestors are **not** walked for a `CustomReflectable`: such a type has
+    /// stated exactly what it wants shown, and adding its ancestors' properties
+    /// would put back whatever it chose to hide — which is the entire purpose of
+    /// ``SelectivelyReflectable``.
+    static func members(of mirror: Mirror, subject: Any) -> [Mirror.Child] {
+        guard !(subject is CustomReflectable) else { return Array(mirror.children) }
+
+        var chain: [Mirror] = []
+        var ancestor: Mirror? = mirror
+        while let current = ancestor {
+            chain.append(current)
+            ancestor = current.superclassMirror
+        }
+        return chain.reversed().flatMap { Array($0.children) }
+    }
+
     static func childNodes(
-        of mirror: Mirror,
+        members: [Mirror.Child],
+        mirror: Mirror,
         kind: Kind,
         path: String,
         depth: Int,
         maxDepth: Int
     ) -> [PropertyNode] {
-        func child(_ value: Any, named name: String, component: String? = nil) -> PropertyNode {
+        let entries = childEntries(members: members, mirror: mirror, kind: kind)
+
+        // Components are made unique *before* any recursion, so no two nodes in
+        // a tree can share an `id`. Two dictionary keys that render alike, or a
+        // subclass property shadowing an inherited one, would otherwise collide
+        // and make a SwiftUI outline conflate their rows.
+        return zip(entries, disambiguated(entries.map(\.component))).map { entry, component in
             node(
-                reflecting: value,
-                name: name,
-                path: childPath(path, component: component ?? name),
+                reflecting: entry.value,
+                name: entry.name,
+                path: childPath(path, component: component),
                 depth: depth + 1,
                 maxDepth: maxDepth
             )
         }
+    }
 
+    typealias ChildEntry = (name: String, component: String, value: Any)
+
+    static func childEntries(members: [Mirror.Child], mirror: Mirror, kind: Kind) -> [ChildEntry] {
         switch kind {
         case .value:
             return []
 
         case .collection:
-            var elements = mirror.children.map(\.value)
+            var elements = members.map(\.value)
             if mirror.displayStyle == .set {
                 // A `Set` has no order of its own, so without this the same data
                 // would produce a differently-ordered tree on each launch.
+                // Elements that render alike still tie, and ties are ordered
+                // arbitrarily — see PT-2 in docs/Tech-Debt.md.
                 elements.sort { String(describing: $0) < String(describing: $1) }
             }
             return elements.enumerated().map { index, element in
-                child(element, named: "[\(index)]")
+                (name: "[\(index)]", component: "[\(index)]", value: element)
             }
 
         case .dictionary:
             // Each child of a dictionary's mirror is a `(key:value:)` tuple, so
             // keys of any type are reachable — not only `String`.
-            return mirror.children
+            return members
                 .compactMap { entry -> (key: String, value: Any)? in
                     let pair = Mirror(reflecting: entry.value).children
                     guard let key = pair.first(where: { $0.label == "key" })?.value,
@@ -159,28 +206,40 @@ private extension PropertyNode {
                     return (String(describing: key), value)
                 }
                 .sorted { $0.key < $1.key }
-                .map { entry in
-                    child(entry.value, named: entry.key, component: "[\(entry.key)]")
-                }
+                .map { (name: $0.key, component: "[\($0.key)]", value: $0.value) }
 
         case .enumeration:
             // A case with associated values reflects as one child: its label is
             // the case name, its value the payload. Flatten a payload tuple so
             // `circle(radius:)` yields a `radius` child rather than a `circle`
             // level wrapping one.
-            guard let payload = mirror.children.first else { return [] }
+            guard let payload = members.first else { return [] }
             let payloadMirror = Mirror(reflecting: payload.value)
             if payloadMirror.displayStyle == .tuple {
                 return payloadMirror.children.enumerated().map { index, associated in
-                    child(associated.value, named: associated.label ?? "[\(index)]")
+                    let name = associated.label ?? "[\(index)]"
+                    return (name: name, component: name, value: associated.value)
                 }
             }
-            return [child(payload.value, named: payload.label ?? "value")]
+            let name = payload.label ?? "value"
+            return [(name: name, component: name, value: payload.value)]
 
         case .structure:
-            return mirror.children.enumerated().map { index, property in
-                child(property.value, named: property.label ?? "[\(index)]")
+            return members.enumerated().map { index, property in
+                let name = property.label ?? "[\(index)]"
+                return (name: name, component: name, value: property.value)
             }
+        }
+    }
+
+    /// Appends `#2`, `#3`, … to repeated components, so a node's path is unique
+    /// among its siblings and therefore unique in the tree.
+    static func disambiguated(_ components: [String]) -> [String] {
+        var occurrences: [String: Int] = [:]
+        return components.map { component in
+            let occurrence = (occurrences[component] ?? 0) + 1
+            occurrences[component] = occurrence
+            return occurrence == 1 ? component : "\(component)#\(occurrence)"
         }
     }
 }
@@ -189,7 +248,7 @@ private extension PropertyNode {
 
 private extension PropertyNode {
 
-    static func kind(of object: Any, mirror: Mirror) -> Kind {
+    static func kind(of object: Any, mirror: Mirror, memberCount: Int) -> Kind {
         guard !isOpaqueValue(object) else { return .value }
 
         switch mirror.displayStyle {
@@ -201,17 +260,17 @@ private extension PropertyNode {
             return .enumeration
         // `.struct`, `.class` and `.tuple` land here — and so does a
         // `CustomReflectable`'s mirror, which carries *no* display style at all
-        // unless it names one, which is why this asks about children rather
-        // than style. A value with nothing to show is a leaf, not an empty
-        // branch: that keeps `UUID` (no reflected children) a leaf rendering
-        // its uuid string.
+        // unless it names one, which is why this asks about members rather than
+        // style. A value with nothing to show is a leaf, not an empty branch:
+        // that keeps `UUID` (no reflected members) a leaf rendering its uuid
+        // string.
         //
         // A plain `default` rather than `@unknown default` because newer
         // toolchains add styles (`.foreignReference`, for C++ interop types) and
         // naming them here would stop this file compiling on the older ones the
         // package otherwise supports. `.optional` never reaches this point.
         default:
-            return mirror.children.isEmpty ? .value : .structure
+            return memberCount == 0 ? .value : .structure
         }
     }
 
@@ -231,10 +290,12 @@ private extension PropertyNode {
         String(describing: type(of: object))
     }
 
-    static func displayValue(of object: Any, kind: Kind, childCount: Int) -> String {
+    static func displayValue(of object: Any, kind: Kind, memberCount: Int) -> String {
         switch kind {
         case .value:
             switch object {
+            case let data as Data:
+                return description(of: data)
             case let convertible as CustomStringConvertible:
                 return convertible.description
             case let convertible as CustomDebugStringConvertible:
@@ -252,13 +313,34 @@ private extension PropertyNode {
             // properties. Without a conformance there is nothing better than the
             // count — `String(describing:)` would dump the whole value onto one
             // line.
-            return (object as? CustomStringConvertible)?.description ?? "\(childCount)"
+            return (object as? CustomStringConvertible)?.description ?? "\(memberCount)"
 
         case .collection, .dictionary:
             // Never the type's own description here: every standard collection
             // conforms, and would dump its entire contents into one row.
-            return "\(childCount)"
+            return "\(memberCount)"
         }
+    }
+
+    /// `Data`'s own description is its length alone — `"3 bytes"` — which tells a
+    /// reader nothing about the payload and makes two different blobs of equal
+    /// size render, and so compare, identically. A short hex preview restores
+    /// both the information and the distinction.
+    ///
+    /// Hex is built by hand rather than with `String(format:)` to keep this
+    /// stdlib-only, and so identical on Linux.
+    static func description(of data: Data) -> String {
+        guard !data.isEmpty else { return "0 bytes" }
+
+        let previewLength = 16
+        let preview = data.prefix(previewLength)
+            .map { byte in
+                let hex = String(byte, radix: 16)
+                return hex.count == 1 ? "0" + hex : hex
+            }
+            .joined(separator: " ")
+        let ellipsis = data.count > previewLength ? " …" : ""
+        return "\(data.count) bytes: \(preview)\(ellipsis)"
     }
 
     /// Joins a path component onto a parent path, without doubling the separator

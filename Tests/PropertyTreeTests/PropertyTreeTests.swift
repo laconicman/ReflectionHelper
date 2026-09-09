@@ -201,11 +201,39 @@ struct PropertyTreeTests {
             let node = PropertyNode(reflecting: element.value, named: element.name)
             #expect(node.kind == .value, "\(element.name) should be a leaf")
             #expect(node.children == nil, "\(element.name) should have no children")
+            guard !(element.value is Data) else { continue }   // rendered by us, see below
             // Deliberately compared against the type's own rendering rather than
             // a hardcoded string: Foundation's formatting of these types is not
             // contractual and differs between Darwin and corelibs.
             #expect(node.displayValue == String(describing: element.value))
         }
+    }
+
+    @Test("Data shows its bytes, because its own description is only a length")
+    func rendersDataContents() {
+        // `String(describing: Data([1,2,3]))` is "3 bytes" — which tells a reader
+        // nothing, and makes any two blobs of one size render, and so compare,
+        // identically.
+        #expect(PropertyNode(reflecting: Data([1, 2, 255]), named: "d").displayValue == "3 bytes: 01 02 ff")
+        #expect(PropertyNode(reflecting: Data(), named: "d").displayValue == "0 bytes")
+
+        let long = PropertyNode(reflecting: Data(repeating: 7, count: 20), named: "d").displayValue
+        #expect(long.hasPrefix("20 bytes: 07 07"))
+        #expect(long.hasSuffix("…"))
+    }
+
+    @Test("Blobs of equal length but different bytes are not equal")
+    func distinguishesDataPayloads() {
+        // Regression: equality cannot inspect `value` (it is `Any`), so it
+        // compares the rendering — which for Data used to be the byte count
+        // alone, collapsing distinct payloads in a Set.
+        struct Payload { let blob: Data }
+
+        let first = PropertyNode(reflecting: Payload(blob: Data([1, 2, 3])), named: "p")
+        let second = PropertyNode(reflecting: Payload(blob: Data([9, 9, 9])), named: "p")
+
+        #expect(first != second)
+        #expect(Set([first, second]).count == 2)
     }
 
     @Test("An opaque value renders as the value, not as a number")
@@ -326,6 +354,108 @@ struct PropertyTreeTests {
         // …and the node still opens onto the properties behind that rendering.
         #expect(tree.kind == .structure)
         #expect(tree.children?.map(\.name) == ["amount"])
+    }
+}
+
+@Suite("Class inheritance")
+struct InheritedPropertyTests {
+    class Animal { let name = "rex"; let age = 7 }
+    final class Dog: Animal { let breed = "corgi" }
+    final class Cat: Animal {}
+
+    @Test("Inherited stored properties appear, ancestors first")
+    func includesInheritedProperties() {
+        // Regression: `Mirror.children` stops at the type itself, so `name` and
+        // `age` hung off `superclassMirror` and silently vanished.
+        let tree = PropertyNode(reflecting: Dog(), named: "dog")
+
+        #expect(tree.kind == .structure)
+        #expect(tree.children?.map(\.name) == ["name", "age", "breed"])
+        #expect(tree.displayValue == "3")
+    }
+
+    @Test("A subclass with no stored properties of its own is still a structure")
+    func doesNotMistakeAnInheritingSubclassForALeaf() {
+        // Regression: with only its own (empty) children consulted, this was
+        // classified a leaf and rendered as its type name, hiding everything.
+        let tree = PropertyNode(reflecting: Cat(), named: "cat")
+
+        #expect(tree.kind == .structure)
+        #expect(tree.children?.map(\.name) == ["name", "age"])
+    }
+
+    @Test("A selectively reflectable type does not get its ancestors back")
+    func respectsACustomMirrorOverInheritance() {
+        // Walking ancestors must not undo the choice the type made: listing
+        // properties is the whole point of the protocol.
+        final class Shown: Animal, SelectivelyReflectable {
+            let shown = "visible"
+
+            static var selectedKeyPathsToMirror: [(label: String, keyPath: PartialKeyPath<Shown>)] {
+                [("shown", \.shown)]
+            }
+        }
+
+        let tree = PropertyNode(reflecting: Shown(), named: "shown")
+
+        #expect(tree.children?.map(\.name) == ["shown"])
+    }
+}
+
+@Suite("Identity uniqueness")
+struct IdentityUniquenessTests {
+    /// Distinct values that render identically — the case that used to collide.
+    struct Tied: Hashable, CustomStringConvertible {
+        let id: Int
+        var description: String { "same" }
+    }
+
+    @Test("Dictionary keys that render alike still get distinct ids")
+    func disambiguatesCollidingDictionaryKeys() {
+        // Regression: name *and* path both derived from the rendered key, so two
+        // distinct keys produced one id — the SwiftUI collision path identity
+        // exists to prevent.
+        let tree = PropertyNode(reflecting: [Tied(id: 1): "one", Tied(id: 2): "two"], named: "d")
+        let children = tree.children ?? []
+
+        #expect(children.count == 2)
+        #expect(Set(children.map(\.id)).count == 2)
+        #expect(children.map(\.id) == ["d[same]", "d[same]#2"])
+        // The visible name still reads as the key; only the path disambiguates.
+        #expect(children.map(\.name) == ["same", "same"])
+    }
+
+    @Test("Set elements that render alike still get distinct ids")
+    func disambiguatesTiedSetElements() {
+        let tree = PropertyNode(reflecting: Set([Tied(id: 1), Tied(id: 2), Tied(id: 3)]), named: "s")
+        let children = tree.children ?? []
+
+        #expect(children.count == 3)
+        #expect(Set(children.map(\.id)).count == 3)
+    }
+
+    @Test("Every id in a tree is unique")
+    func idsAreUniqueThroughout() {
+        struct Nested { let a = [1, 2], b = ["x": 1, "y": 2], c = Tied(id: 1) }
+
+        let all = flattened(PropertyNode(reflecting: Nested(), named: "root"))
+
+        #expect(Set(all.map(\.id)).count == all.count)
+    }
+}
+
+@Suite("Depth argument")
+struct DepthArgumentTests {
+    struct Wrapper { let inner = ["a"] }
+
+    @Test("A negative maxDepth is treated as zero")
+    func clampsNegativeDepth() {
+        let zero = PropertyNode(reflecting: Wrapper(), named: "w", maxDepth: 0)
+        let negative = PropertyNode(reflecting: Wrapper(), named: "w", maxDepth: -5)
+
+        #expect(negative == zero)
+        #expect(negative.children == nil)
+        #expect(negative.isTruncated)
     }
 }
 

@@ -51,8 +51,35 @@ A path is also a debuggable identifier: it prints as the thing you would type to
 library's problem onto every consumer. Hashing the reflected value into the id — `value` is `Any`
 and not reliably `Hashable`.
 
-**Cost.** Two nodes can collide when a dictionary key contains a `.` or a `[`
-([PT-3](./Tech-Debt.md)).
+**Uniqueness is enforced, stability is conditional.** Paths are derived from names, and names are
+not injective: two dictionary keys rendering the same string, a key containing a `.` or `[`, or a
+subclass property shadowing an inherited one would all produce one `id` for two nodes — the very
+SwiftUI collision the path was introduced to prevent. Sibling path components are therefore made
+unique before the walker recurses, by suffixing repeats `#2`, `#3`, …; the visible `name` is left
+alone, so only the path disambiguates. What cannot be enforced is *stability* for siblings that
+render alike: their order is arbitrary, so which of them holds which index can change between runs
+([PT-2](./Tech-Debt.md)). Every ordinary value renders distinctly and is unaffected.
+
+## A class's inherited properties are part of it
+
+**Decision.** For a class, members are collected from the whole ancestor chain via
+`Mirror.superclassMirror`, root-most ancestor first, and that combined list drives classification,
+the child count, and the children themselves.
+
+**Why.** `Mirror.children` stops at the type itself. Without walking ancestors a subclass shows
+only the properties it declares, so inherited state silently disappears from the tree — and a
+subclass declaring no stored properties of its own has empty children, which this walker's
+"nothing to show is a leaf" rule then turned into a leaf rendering its own type name, hiding
+everything it holds. Found in review; both shapes are now pinned by tests. Ancestors read first
+because that is the order the type was built in.
+
+**Not applied to a `CustomReflectable`.** Such a type has stated exactly which properties it wants
+shown, and walking its ancestors would put back whatever it chose to hide — which is precisely
+what `SelectivelyReflectable` exists to do. So the chain is walked only when the subject does not
+supply its own mirror.
+
+**Rejected.** Asking `displayStyle == .class` before walking. `superclassMirror` is `nil` for
+everything else, so the check would only add a branch that can never change the answer.
 
 ## Rendering is computed once, at build time
 
@@ -68,16 +95,31 @@ equal — see below.
 recorded as [PT-6](./Tech-Debt.md); for the trees this package is built for — a decoded response,
 tens to hundreds of nodes — eager is simpler and the cost is invisible.
 
-## Equality follows the data, ignoring `value`
+## Equality compares the rendering, not the value
 
 **Decision.** `==` compares path, name, kind, type name, rendering, truncation and children. It
-does not compare `PropertyNode.value`.
+does not compare `PropertyNode.value`, and the contract is stated in terms of the *description* of
+a value rather than the value.
 
 **Why.** `value` is `Any`, which is not `Equatable`; there is nothing to compare. Everything else
-is derived from the value, so comparing the derived form is a faithful proxy: two trees over equal
-data are equal, and two trees of the same *shape* over different data are not. 1.0.0 compared `id`
-alone, which — combined with fresh UUIDs — meant no two nodes were ever equal, including a node
-and its own rebuild.
+is derived from the value, so comparing the derived form is the available proxy: two trees over
+equal data are equal, and two trees of the same shape over different data are not. 1.0.0 compared
+`id` alone, which — combined with fresh UUIDs — meant no two nodes were ever equal, including a
+node and its own rebuild.
+
+**The proxy is only as good as the rendering, which is why `Data` renders its bytes.** An earlier
+draft of this document claimed outright that trees over different data are unequal. Review found
+the counter-example: `Data`'s own description is a byte count alone, so `Data([1,2,3])` and
+`Data([9,9,9])` rendered identically, compared equal, and collapsed into one element in a `Set`.
+The fix is at the source — an opaque `Data` leaf now renders a 16-byte hex preview, which a reader
+wants to see anyway — and the contract is now stated honestly: **values that render identically
+compare equal**, however they differ underneath. Blobs agreeing in both length and first 16 bytes
+still collapse.
+
+**Rejected.** Opening `value` as an `any Equatable` existential to compare it properly. It works
+for conforming types, but a value that is not `Equatable` would then never compare equal to
+anything — reintroducing 1.0.0's defect for exactly the types reflection is most often pointed at.
+Equality would also stop agreeing with what the reader sees.
 
 ## `value: Any` is kept, and the package is therefore not `Sendable`
 
@@ -114,6 +156,11 @@ of the consumer's own structs that conform, and a type having a description is n
 it has no interesting parts — hence the compromise that a `.structure` shows its own description
 *and* still expands.
 
+`Data` is the one whose rendering is ours rather than Foundation's: its description is a byte
+count, which describes no payload and made distinct blobs compare equal (see § Equality). It
+renders `3 bytes: 01 02 03`, truncated after 16 bytes, built without `String(format:)` so it is
+identical on Linux.
+
 **Cost.** The list is closed; a consumer's own opaque wrapper still spills its internals
 ([PT-4](./Tech-Debt.md)).
 
@@ -126,7 +173,9 @@ node at the limit keeps its kind and child count and reports `PropertyNode.isTru
 measured still descending at 5 000 levels. That is a crash, not the "deep tree" its README
 described, and reference graphs (a Core Data object, a view hierarchy) are exactly what one
 inspects. A depth limit is four lines and ends the whole class of problem, cycles included.
-`isTruncated` exists so a truncated branch is not silently indistinguishable from a leaf.
+`isTruncated` exists so a truncated branch is not silently indistinguishable from a leaf. A
+negative `maxDepth` is clamped to zero rather than left to mean whatever the comparison happens to
+do, so the argument's contract is total.
 
 **Rejected — for now — real cycle detection** (tracking visited `ObjectIdentifier`s along the
 current path). It renders better output — "cycle" instead of a repeating chain — but costs an

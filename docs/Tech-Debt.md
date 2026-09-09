@@ -17,25 +17,24 @@ data. Truncation is reported, a cycle is not.
 **Discharge.** Track visited `ObjectIdentifier`s along the current path and render a node that
 names the ancestor it points back to. Rejected for 2.0.0 in [Design](./Design.md) § A depth limit.
 
-### PT-2 — Ordering is lexicographic on the rendered form · **open**
+### PT-2 — Ordering is lexicographic on the rendered form, and ties are arbitrary · **open**
 
-Dictionary keys and set elements are sorted by `String(describing:)`.
+Dictionary keys and set elements are sorted by `String(describing:)`, which is neither a natural
+order nor a total one.
 
-**Cost.** A `[Int: T]` orders its keys 1, 10, 2. Correct and stable, but wrong-looking — and the
-first thing anyone notices in a numerically-keyed dictionary.
-**Discharge.** Compare numerically when every rendered key parses as a number, lexicographically
-otherwise. Pinned today by `handlesNonStringKeys`, which asserts the current order deliberately, so
+**Cost.** Two costs, the second found in review. A `[Int: T]` orders its keys 1, 10, 2 — correct
+and stable, but wrong-looking, and the first thing anyone notices in a numerically-keyed
+dictionary. And when two siblings render *identically* the comparator orders neither first, so
+their order comes from set or dictionary iteration, which varies between runs: measured across six
+process launches, a three-element set of tied values came out `[1,2,3]`, `[1,3,2]`, `[3,1,2]` and
+`[2,3,1]`. Their ids stay unique (see PT-3, discharged) but which element holds which index moves,
+so a SwiftUI outline can carry expansion state to the wrong row. Ordinary values render distinctly
+and are unaffected.
+**Discharge.** Compare numerically when every rendered key parses as a number. For ties there is no
+second key to compare on for an arbitrary `Any`, so the honest fix is either to require a
+`Comparable`/`Hashable` witness where one exists, or to state ties as unordered and stop implying
+stability. Pinned today by `handlesNonStringKeys`, which asserts the current order deliberately, so
 that test changes with the fix.
-
-### PT-3 — Path ids collide on keys containing a separator · **open**
-
-`id` is built by joining components with `.` and `[]`.
-
-**Cost.** A dictionary key of `"a.b"` produces the same path as a nested `a` → `b`, so two nodes in
-one tree can share an `id` — exactly the SwiftUI identity collision the path was introduced to fix.
-Needs an adversarial key to hit; a decoded response can contain one.
-**Discharge.** Escape `.`, `[` and `]` in a name before joining, or make `ID` a structured type
-holding its components rather than a `String`.
 
 ### PT-4 — The leaf policy is a closed list · **open**
 
@@ -75,11 +74,48 @@ ordering — are reasoned, not observed. A real decoded response is what would s
 read well.
 **Discharge.** Inspect one in a debug UI before tagging 2.0.0, and record what changed.
 
+### PT-14 — Equality can only compare the rendering · **open**
+
+`==` and `hash(into:)` cannot inspect `value`, because it is `Any`, so they compare the derived
+fields — which means two values that render identically compare equal however they differ.
+
+**Cost.** Found in review as a `Data` defect: its description is a byte count alone, so distinct
+blobs of one size collapsed in a `Set`. `Data` now renders a hex preview, so the residue is
+narrower — blobs agreeing in length *and* first 16 bytes — but the shape of the problem belongs to
+any type whose description elides content, including a consumer's own.
+**Discharge.** Open `value` as an `any Equatable` and compare properly where the witness exists,
+falling back to the rendering where it does not. Rejected for 2.0.0 because a non-`Equatable` value
+would then never compare equal to anything, which is 1.0.0's defect again for exactly the types
+reflection is most often pointed at. See [Design](./Design.md) § Equality.
+
+### PT-15 — `typeName` does not identify optionality consistently · **open**
+
+A `nil` reports `Optional<Int>`; a present value reports `Int`, because the optional level is
+collapsed and the wrapped value is what remains.
+
+**Cost.** Found in review. A consumer cannot use `typeName` to answer "is this property optional?"
+— the answer depends on whether the value happens to be present. Harmless for display, wrong for
+anything driving behaviour off the type.
+**Discharge.** Carry optionality separately — either a `Bool` on the node, or by keeping the
+declared type alongside the unwrapped one. Both add a stored field to serve a question no consumer
+has asked yet.
+
 ---
 
 ## Discharged in 2.0.0
 
-The six defects 1.0.0 shipped with, each now pinned by a named test.
+The six defects 1.0.0 shipped with, plus three found reviewing this branch, each now pinned by a
+named test.
+
+### PT-3 — Path ids could collide · **discharged**
+
+`id` is built by joining names, and names are not injective: a dictionary key containing `.` or
+`[`, two keys rendering the same string, or a subclass property shadowing an inherited one all
+produced one `id` for two nodes. Review found the second of those, which is the common case —
+the register had recorded only the first. Discharged by making sibling path components unique
+before the walker recurses, suffixing repeats `#2`, `#3`, … while leaving the visible `name`
+alone. Pinned by `disambiguatesCollidingDictionaryKeys`, `disambiguatesTiedSetElements` and
+`idsAreUniqueThroughout`. Ordering stability for tied siblings remains open as PT-2.
 
 ### PT-8 — `init(id:…)` dropped its `id` argument · **discharged**
 
@@ -116,3 +152,19 @@ Pinned by `ordersSetElements` and `handlesNonStringKeys`.
 
 1.0.0's first documented known limit. Discharged by publishing `PropertyNode.Kind`.
 Pinned by `distinguishesDictionariesFromStructures`.
+
+### PT-16 — Inherited properties vanished from the tree · **discharged**
+
+`Mirror.children` stops at the type itself, so reflecting a subclass showed only the properties it
+declared and silently dropped everything its superclasses held; a subclass declaring no stored
+properties of its own was classified a leaf, hiding all of them. Found in review. Discharged by
+collecting members across the `superclassMirror` chain — except for a `CustomReflectable`, whose
+choice of properties must not be undone. Pinned by `includesInheritedProperties`,
+`doesNotMistakeAnInheritingSubclassForALeaf` and `respectsACustomMirrorOverInheritance`.
+
+### PT-17 — Distinct `Data` payloads rendered and compared identically · **discharged**
+
+`Data`'s own description is a byte count, so `Data([1,2,3])` and `Data([9,9,9])` both rendered
+`3 bytes`, compared equal, and collapsed into one element in a `Set`. Found in review. Discharged
+by rendering a 16-byte hex preview, which a reader wants regardless. Pinned by
+`rendersDataContents` and `distinguishesDataPayloads`. The general case is PT-14.

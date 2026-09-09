@@ -69,13 +69,18 @@ List {
   removed, so a `String?` looks like a `String`. A `nil` becomes a leaf rendering `"nil"` — and
   still reports its type, `Optional<Int>`.
 - **Collections are indexed** `[0]`, `[1]`, … rather than reflected as `Array`'s internals. Sets
-  are ordered by their rendered elements, since set order is otherwise undefined between runs.
+  are ordered by their rendered elements, since set order is otherwise undefined between runs —
+  elements that render *identically* still tie, and ties order arbitrarily.
+- **Inherited properties appear.** `Mirror.children` stops at the type itself, so a class's
+  inherited stored properties are collected from its ancestors too. A type that chooses its own
+  properties through `SelectivelyReflectable` is left alone.
 - **Dictionaries are keyed and ordered by key** — for *any* key type, not just `String`.
 - **Enum cases** render as the case name, associated values and all — `circle(radius: 1.0)` — and
   expand to those values.
 - **`Date`, `URL`, `Data` and `Decimal` are leaves.** Reflected, they expose
   `timeIntervalSinceReferenceDate`, `_url`, a byte buffer and `_mantissa` — noise in place of the
-  value.
+  value. `Data` renders a hex preview (`3 bytes: 01 02 03`), because its own description is a byte
+  count that describes no payload.
 - **Depth is bounded** (`maxDepth`, default 16). This is what stops a reference cycle from
   recursing until the stack is exhausted; a node at the limit reports `isTruncated` and still says
   how many children were cut.
@@ -94,6 +99,7 @@ All of it dispatches on `Mirror.DisplayStyle` rather than casting to concrete ty
 | `kind` | `value`, `structure`, `collection`, `dictionary`, `enumeration` |
 | `value` | the reflected value itself, to downcast if you want to |
 | `children` / `hasChildren` / `isTruncated` | the shape below this node |
+| `id` | the path from the root — unique in the tree, stable across rebuilds |
 
 `kind` is what tells a **dictionary from a struct** — both produce a node with named children, and
 nothing else separates them.
